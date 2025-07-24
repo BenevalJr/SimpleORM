@@ -137,6 +137,8 @@ Type
       {$ENDIF}
   end;
 
+function TryStrToEnumOrdinal(ATypeInfo: PTypeInfo; const AValue: string; out AOrdinal: Integer): Boolean;
+
 implementation
 
 uses
@@ -144,6 +146,26 @@ uses
   Variants,
   SimpleRTTIHelper,
   System.UITypes;
+
+
+function TryStrToEnumOrdinal(ATypeInfo: PTypeInfo; const AValue: string; out AOrdinal: Integer): Boolean;
+var
+  i: Integer;
+  EnumName: string;
+  TypeData: PTypeData;
+begin
+  Result := False;
+  TypeData := GetTypeData(ATypeInfo);
+  for i := TypeData^.MinValue to TypeData^.MaxValue do
+  begin
+    EnumName := GetEnumName(ATypeInfo, i);
+    if SameText(EnumName, AValue) then
+    begin
+      AOrdinal := i;
+      Exit(True);
+    end;
+  end;
+end;
 
 { TSimpleRTTI }
 
@@ -395,20 +417,22 @@ begin
   end;
 end;
 
-constructor TSimpleRTTI<T>.Create( aInstance : T );
+{ TSimpleRTTI }
+
+constructor TSimpleRTTI<T>.Create(aInstance: T);
 begin
   FInstance := aInstance;
 end;
 
-function TSimpleRTTI<T>.DataSetToEntity(aDataSet: TDataSet;
-  var aEntity: T): iSimpleRTTI<T>;
+function TSimpleRTTI<T>.DataSetToEntity(aDataSet: TDataSet; var aEntity: T): iSimpleRTTI<T>;
 var
-  Field : TField;
-  ctxRtti   : TRttiContext;
-  typRtti   : TRttiType;
-  prpRtti   : TRttiProperty;
-  Info     : PTypeInfo;
-  Value : TValue;
+  Field: TField;
+  ctxRtti: TRttiContext;
+  typRtti: TRttiType;
+  prpRtti: TRttiProperty;
+  Info: PTypeInfo;
+  Value: TValue;
+  Ord: Integer;
 begin
   Result := Self;
   aDataSet.First;
@@ -419,34 +443,46 @@ begin
     try
       for Field in aDataSet.Fields do
       begin
-          typRtti := ctxRtti.GetType(Info);
-          for prpRtti in typRtti.GetProperties do
+        typRtti := ctxRtti.GetType(Info);
+        for prpRtti in typRtti.GetProperties do
+        begin
+          if LowerCase(prpRtti.FieldName) = LowerCase(Field.DisplayName) then
           begin
-            if LowerCase(prpRtti.FieldName) = LowerCase(Field.DisplayName) then
-            begin
-              case prpRtti.PropertyType.TypeKind of
-                tkUnknown, tkString, tkWChar, tkLString, tkWString, tkUString:
-                  Value := Field.AsString;
-                tkInteger, tkInt64:
-                  Value := Field.AsInteger;
-                tkChar: ;
-                tkEnumeration: ;
-                tkFloat: Value := Field.AsFloat;
-                tkSet: ;
-                tkClass: ;
-                tkMethod: ;
-                tkVariant: ;
-                tkArray: ;
-                tkRecord: ;
-                tkInterface: ;
-                tkDynArray: ;
-                tkClassRef: ;
-                tkPointer: ;
-                tkProcedure: ;
-              end;
-              prpRtti.SetValue(Pointer(aEntity), Value);
+            case prpRtti.PropertyType.TypeKind of
+              tkUnknown, tkString, tkWChar, tkLString, tkWString, tkUString:
+                Value := Field.AsString;
+              tkInteger, tkInt64:
+                Value := Field.AsInteger;
+              tkChar: ;
+              tkEnumeration:
+                begin
+                  if Field.IsNull then
+                    Value := TValue.Empty
+                  else
+                  begin
+                    if TryStrToEnumOrdinal(prpRtti.PropertyType.Handle, Field.AsString, Ord) then
+                      Value := TValue.FromOrdinal(prpRtti.PropertyType.Handle, Ord)
+                    else
+                      Continue; // ignora se não encontrar valor válido
+                  end;
+                end;
+              tkFloat:
+                Value := Field.AsFloat;
+              tkSet: ;
+              tkClass: ;
+              tkMethod: ;
+              tkVariant: ;
+              tkArray: ;
+              tkRecord: ;
+              tkInterface: ;
+              tkDynArray: ;
+              tkClassRef: ;
+              tkPointer: ;
+              tkProcedure: ;
             end;
+            prpRtti.SetValue(Pointer(aEntity), Value);
           end;
+        end;
       end;
     finally
       ctxRtti.Free;
@@ -456,15 +492,14 @@ begin
   aDataSet.First;
 end;
 
-function TSimpleRTTI<T>.DataSetToEntityList(aDataSet: TDataSet;
-  var aList: TObjectList<T>): iSimpleRTTI<T>;
+function TSimpleRTTI<T>.DataSetToEntityList(aDataSet: TDataSet; var aList: TObjectList<T>): iSimpleRTTI<T>;
 var
-  Field : TField;
-  ctxRtti   : TRttiContext;
-  typRtti   : TRttiType;
-  prpRtti   : TRttiProperty;
-  Info     : PTypeInfo;
-  Value : TValue;
+  Field: TField;
+  ctxRtti: TRttiContext;
+  typRtti: TRttiType;
+  prpRtti: TRttiProperty;
+  Info: PTypeInfo;
+  Value: TValue;
 begin
   Result := Self;
   aList.Clear;
@@ -488,7 +523,19 @@ begin
               tkInteger, tkInt64:
                 Value := Field.AsInteger;
               tkChar: ;
-              tkEnumeration: ;
+              tkEnumeration:
+                begin
+                  if Field.IsNull then
+                    Value := TValue.Empty
+                  else
+                  begin
+                    var Ord: Integer;
+                    if TryStrToEnumOrdinal(prpRtti.PropertyType.Handle, Field.AsString, Ord) then
+                      Value := TValue.FromOrdinal(prpRtti.PropertyType.Handle, Ord)
+                    else
+                      Continue; // ignora se não encontrar valor válido
+                  end;
+                end;
               tkFloat:
                 Value := Field.AsFloat;
               tkSet: ;
@@ -527,6 +574,8 @@ var
   typRtti   : TRttiType;
   prpRtti   : TRttiProperty;
   Info     : PTypeInfo;
+  enumValue: TValue;
+  enumName : string;
 begin
   Result := Self;
   Info := System.TypeInfo(T);
@@ -575,6 +624,12 @@ begin
         tkUString,
         tkString      : aDictionary.Add(prpRtti.FieldName, prpRtti.GetValue(Pointer(FInstance)).AsString);
         tkVariant     : aDictionary.Add(prpRtti.FieldName, prpRtti.GetValue(Pointer(FInstance)).AsVariant);
+        tkEnumeration:
+          begin
+            enumValue := prpRtti.GetValue(Pointer(FInstance));
+            enumName := GetEnumName(enumValue.TypeInfo, enumValue.AsOrdinal);
+            aDictionary.Add(prpRtti.FieldName, enumName);
+          end;
       else
           aDictionary.Add(prpRtti.FieldName, prpRtti.GetValue(Pointer(FInstance)).AsString);
       end;
@@ -586,10 +641,10 @@ end;
 
 function TSimpleRTTI<T>.DictionaryTypeFields(var aDictionary : TDictionary<string, TFieldType>) : iSimpleRTTI<T>;
 var
-  ctxRtti   : TRttiContext;
-  typRtti   : TRttiType;
-  prpRtti   : TRttiProperty;
-  Info     : PTypeInfo;
+  ctxRtti : TRttiContext;
+  typRtti : TRttiType;
+  prpRtti : TRttiProperty;
+  Info    : PTypeInfo;
 begin
   Result := Self;
   Info := System.TypeInfo(T);
@@ -603,23 +658,39 @@ begin
 
       case prpRtti.PropertyType.TypeKind of
         tkInteger, tkInt64:
+          aDictionary.Add(prpRtti.FieldName, TFieldType.ftInteger);
+
+        tkFloat:
           begin
-          end;
-        tkFloat       :
-        begin
-          if prpRtti.GetValue(Pointer(FInstance)).TypeInfo = TypeInfo(TDateTime) then
-            aDictionary.Add(prpRtti.FieldName, TFieldType.ftDateTime)
-          else
-          if prpRtti.GetValue(Pointer(FInstance)).TypeInfo = TypeInfo(TDate) then
+            if prpRtti.GetValue(Pointer(FInstance)).TypeInfo = TypeInfo(TDateTime) then
+              aDictionary.Add(prpRtti.FieldName, TFieldType.ftDateTime)
+            else if prpRtti.GetValue(Pointer(FInstance)).TypeInfo = TypeInfo(TDate) then
               aDictionary.Add(prpRtti.FieldName, TFieldType.ftDate)
-          else
-          if prpRtti.GetValue(Pointer(FInstance)).TypeInfo = TypeInfo(TTime) then
-            aDictionary.Add(prpRtti.FieldName, TFieldType.ftTime)
-        end;
+            else if prpRtti.GetValue(Pointer(FInstance)).TypeInfo = TypeInfo(TTime) then
+              aDictionary.Add(prpRtti.FieldName, TFieldType.ftTime)
+            else
+              aDictionary.Add(prpRtti.FieldName, TFieldType.ftFloat);
+          end;
+
         tkWChar,
         tkLString,
         tkWString,
-        tkUString : ;
+        tkUString,
+        tkString:
+          aDictionary.Add(prpRtti.FieldName, TFieldType.ftString);
+
+        tkVariant:
+          aDictionary.Add(prpRtti.FieldName, TFieldType.ftVariant);
+
+        tkEnumeration:
+          // Você pode mudar para ftInteger se preferir ordinal
+          //aDictionary.Add(prpRtti.FieldName, TFieldType.ftString);
+          begin
+            if prpRtti.PropertyType.Handle = TypeInfo(Boolean) then
+              aDictionary.Add(prpRtti.FieldName, TFieldType.ftBoolean)
+            else
+              aDictionary.Add(prpRtti.FieldName, TFieldType.ftString); // ou ftInteger se preferir ordinal
+          end;
       end;
     end;
   finally
